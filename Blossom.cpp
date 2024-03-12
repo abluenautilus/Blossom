@@ -7,9 +7,14 @@
 #include "ColorLists.hpp"
 #include "SRButton.cpp"
 
+#define DSY_MIN(in, mn) (in < mn ? in : mn)
+#define DSY_MAX(in, mx) (in > mx ? in : mx)
+#define DSY_CLAMP(in, mn, mx) (DSY_MIN(DSY_MAX(in, mn), mx))
+
 using namespace daisy;
 using namespace bloom;
 using namespace seed;
+
 
 enum newMelodyNoteOptions {
     NM_REPEAT,
@@ -27,35 +32,40 @@ enum srButtons {
 // Declare a DaisySeed object called hardware
 Bloom hw;
 
+// Button long press time
+static const float button_longpress_time = 1500;
+
 // Output gates
 Gate gate1,gate2,clockout,tuningGate;
 
+// Knob values
+float knob1, knob2, knob3, knob4, knob5;
+
+SRButton buttons[3]; // shift register buttons
+
 Random rng;
 
-SRButton buttons[3];
+// Sequence data
+const int maxSteps = 32;
+const int minSteps = 3;
+Note current_note;
+Note sequence[maxSteps];
+int sequenceLength = 8;
+
+float transpose_voltage = 0.0;
 
 int current_step = 0;
 int current_page = 0;
 int display_page = 0;
 int current_place = 0;
-Note current_note;
-int sequenceLength = 8;
-const int maxSteps = 32;
-const int minSteps = 3;
-const float global_brightness = 0.5;
 
-// Button long press
-static const float button_longpress_time = 1500;
-
+float global_brightness = 0.5;
+float rest_probability = 0.0;
 int numScales;
 bool follow = false;
-
 float mutation_prob;
 
-Note sequence[maxSteps];
-
 //Melody creation
-//int noteOptionWeights[4] = {2,5,5,10}; //REPEAT UP DOWN NEW
 int noteOptionWeights[4] = {0,0,0,10}; //REPEAT UP DOWN NEW
 std::string baseKey = "C";
 std::string scale = "Natural Minor";
@@ -75,16 +85,14 @@ int octaveOffset = 0;
 int repetitionCount = 0;
 Note prevNote; 
 int noteKind;
-int channel;
-
-// Knob values
-float knob1, knob2, knob3, knob4, knob5;
 
 float SampleRate;
 
 // Persistence
 struct Settings {
     int sequenceLength;
+    float global_brightness;
+    bool follow;
     int sequence[32];
     bool muted[32];
     bool operator!=(const Settings& a) {
@@ -96,9 +104,12 @@ Settings& operator* (const Settings& settings) { return *settings; }
 PersistentStorage<Settings> storage(hw.seed.qspi);
 
 void saveData() {
-    hw.seed.PrintLine("Saving length %d",sequenceLength);
+    
     Settings &localSettings = storage.GetSettings();
     localSettings.sequenceLength = sequenceLength;
+    localSettings.global_brightness = global_brightness;
+    localSettings.follow = follow;
+    hw.seed.PrintLine("Saving length %d brightness %.2f",sequenceLength,global_brightness);
     for (size_t i = 0; i < 32; ++i) {
         localSettings.sequence[i] = sequence[i].noteNumMIDI;
         localSettings.muted[i] = sequence[i].muted;
@@ -112,6 +123,9 @@ void loadData() {
     hw.seed.PrintLine("Before load %d",sequenceLength);
     Settings &localSettings = storage.GetSettings();
     sequenceLength = localSettings.sequenceLength;
+    global_brightness = localSettings.global_brightness;
+    hw.seed.PrintLine("Loading length %d brightness %.2f",sequenceLength,global_brightness);
+    follow = localSettings.follow;
     for (size_t i = 0; i < 32; ++i) {
         sequence[i].changeMIDINoteNum(localSettings.sequence[i]);
         sequence[i].muted = localSettings.muted[i];
@@ -129,7 +143,6 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
    for(size_t i = 0; i < size; i++)
     {
         // Advance gates
-
         float tuninggate_val = tuningGate.Process(); 
         hw.WriteGate(GATE_1,tuninggate_val);
 
@@ -145,8 +158,9 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         float clockout_val = clockout.Process(); 
         hw.WriteGate(CLOCK_OUT,clockout_val);
 
+        // set cv out voltage
         if (!current_note.muted && !tuninggate_val)  {
-            hw.SetCvOut(CV_OUT_1,current_note.voltage);
+            hw.SetCvOut(CV_OUT_1,current_note.voltage + transpose_voltage);
         }
 
     }
@@ -190,6 +204,15 @@ void changeNotes() {
 
     Note newNote = getRandomNote(newnote_range);
 
+    int t = rng.GetValue() % 100;
+    hw.seed.PrintLine("restprob is %.2f",rest_probability);
+    hw.seed.PrintLine("t is %d",t);
+    if (t < rest_probability) { 
+        newNote.muted = true;  
+    } else {
+        newNote.muted = false;
+    }
+
     sequence[noteToChange] = newNote;
 
 }
@@ -205,10 +228,10 @@ void doStep() {
         //end of sequence mutations
         float noteChoice = rng.GetFloat(0,100)/2;
         if (noteChoice < mutation_prob) {
-            hw.seed.PrintLine("noteChoice is %.2f mut prob %.2f",noteChoice,mutation_prob);
+            //hw.seed.PrintLine("noteChoice is %.2f mut prob %.2f",noteChoice,mutation_prob);
             changeNotes();
         } else {
-            hw.seed.PrintLine("NO CHANGE noteChoice is %.2f mut prob %.2f",noteChoice,mutation_prob);
+            //hw.seed.PrintLine("NO CHANGE noteChoice is %.2f mut prob %.2f",noteChoice,mutation_prob);
         }
     }
 
@@ -322,6 +345,14 @@ void newMelody() {
             sequence[x] = newNote;
             prevNote = newNote;
         }
+        int t = rng.GetValue() % 100;
+        if (t < rest_probability) { 
+            sequence[x].muted = true;
+        } else {
+            sequence[x].muted = false;
+        }
+       
+
         prevNote = sequence[x];
         
     } 
@@ -495,7 +526,13 @@ void doEncoder(int enc, int val) {
             }
 
             hw.WriteLeds();
-        } 
+        
+        } else if (enc == 7) {
+
+            global_brightness = global_brightness + (val * 0.05);
+            hw.WriteLeds();
+
+        }
     }
 }
 
@@ -556,8 +593,6 @@ int main(void)
     hw.SetLedColor(LED_TRUNK8,steps_rainbow[7]); 
     hw.WriteLeds();
 
-    channel = 1;
-
     scale = scaleNames.at(scaleNum);
     validTones = scaleTones.at(scale);
     validToneWeights = scaleToneWeights.at(scale);
@@ -566,6 +601,8 @@ int main(void)
 
     Settings defaults;
     defaults.sequenceLength = 8;
+    defaults.global_brightness = 0.5;
+    defaults.follow = false;
     for (size_t r = 0; r < 32; ++r) {
         defaults.sequence[r] = 60;
         defaults.muted[r] = false;
@@ -582,14 +619,34 @@ int main(void)
             buttons[i].Debounce();
         }
 
-        float knob_rate = hw.GetKnobValue(KNOB_5);
-        display_page = floor(knob_rate * 4);
+        // Read pots
+        float knob_root = hw.GetKnobValue(KNOB_1);
+        transpose_voltage = knob_root * 2 - 1 ;
+        
+        float knob_rest = hw.GetKnobValue(KNOB_2);
+        rest_probability = DSY_CLAMP(knob_rest * 100 - 10,0,90);
+
+        float knob_branches = hw.GetKnobValue(KNOB_3);
+        newnote_range = knob_branches > 0.5;
 
         float knob_mutation = hw.GetKnobValue(KNOB_4);
         mutation_prob = knob_mutation * 100;
 
-        float knob_branches = hw.GetKnobValue(KNOB_3);
-        newnote_range = knob_branches > 0.5;
+        float knob_rate = hw.GetKnobValue(KNOB_5);
+        
+
+        // Read buttons
+        if (buttons[SRBUTTON_SHIFT].Pressed()) {
+            hw.SetLed(LED_SHIFT,1.0 * global_brightness,1.0 * global_brightness,1.0 * global_brightness);
+        } else {
+            hw.SetLed(LED_SHIFT,0.0,0.0,0.0);
+        }
+
+        if (buttons[SRBUTTON_RESET].Pressed()) {
+            hw.SetLed(LED_RESET,1.0 * global_brightness,1.0 * global_brightness,1.0 * global_brightness);
+        } else {
+            hw.SetLed(LED_RESET,0.0,0.0,0.0);
+        }
 
         if (buttons[SRBUTTON_CHANNEL].RisingEdge()) {
             saveData();
@@ -610,21 +667,22 @@ int main(void)
             hw.SetLed(LED_CHANNEL,1,0.0,1);
         }
 
-        if (buttons[SRBUTTON_RESET].RisingEdge()) {
+        if (buttons[SRBUTTON_RESET].isReleasedShort()) {
             newMelody();
         }
+
+        hw.WriteLeds();
   
-        int step_to_compare = 0;
-        int modifier = 0;
+        int step_to_compare = current_step % 8;
+        
         if (follow) {
             display_page = current_page;
-            step_to_compare = current_place;
-            modifier = current_page * 8;
         } else {
-            step_to_compare = current_place;
-            modifier = display_page * 8;
+            display_page = floor(knob_rate * 4);
         }
-
+        int modifier = display_page * 8;
+        
+        // Check encoder clicks
         for (int i = 0; i < ENC_LAST; ++i) {
             if (hw.ButtonRisingEdge(i)) {
                 if (hw.ButtonState(BUTTON_SHIFT)) {
@@ -635,18 +693,8 @@ int main(void)
             }
         }
 
-        if (buttons[SRBUTTON_SHIFT].Pressed()) {
-            hw.SetLed(LED_SHIFT,1.0 * global_brightness,1.0 * global_brightness,1.0 * global_brightness);
-        } else {
-            hw.SetLed(LED_SHIFT,0.0,0.0,0.0);
-        }
 
-        if (buttons[SRBUTTON_RESET].Pressed()) {
-            hw.SetLed(LED_RESET,1.0 * global_brightness,1.0 * global_brightness,1.0 * global_brightness);
-        } else {
-            hw.SetLed(LED_RESET,0.0,0.0,0.0);
-        }
-
+        // Set individual step LEDs
         for (size_t i = 0; i < 8; ++i) {
 
             if ((int)i == step_to_compare && current_page == display_page) {
@@ -677,6 +725,7 @@ int main(void)
         float clkval = hw.ButtonState(CLOCK_IN);
         hw.SetLed(LED_CLOCK,0.0,clkval * global_brightness,clkval* global_brightness);
 
+        // Set gate out light
         float gate1val = gate1.GetCurrentState();
         hw.SetLed(LED_GATE1,0.0,0.0,gate1val* global_brightness);
 
