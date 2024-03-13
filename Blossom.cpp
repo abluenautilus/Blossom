@@ -54,12 +54,17 @@ SRButton buttons[3]; // shift register buttons
 
 Random rng;
 
+//Calibration data
+const float cal_global_offset = 0.519;
+const float cal_points_per_volt = 0.274;
+
 // Sequence data
 const int maxSteps = 32;
 const int minSteps = 3;
 Note current_note;
 Note sequence[maxSteps];
 int sequenceLength = 8;
+const float volts_per_semitone = 0.083333;
 
 float transpose_voltage = 0.0;
 
@@ -68,12 +73,16 @@ int current_page = 0;
 int display_page = 0;
 int current_place = 0;
 
+//Settings
 float global_brightness = 0.5;
 float rest_probability = 0.0;
+float gate_length = 0.1;
+bool note_preview = true;
+
 int numScales;
 bool follow = false;
 float mutation_prob;
-float gate_length = 0.1;
+
 float reset_prev;
 float new_prev;
 
@@ -81,7 +90,7 @@ float new_prev;
 int noteOptionWeights[4] = {0,0,0,10}; //REPEAT UP DOWN NEW
 std::string baseKey = "C";
 std::string scale = "Natural Minor";
-uint8_t scaleNum = 2;
+uint8_t scaleNum = 1;
 uint8_t scaleNumPrev = 5;
 uint8_t baseOctave = 4;
 const int midi_max = 84;
@@ -108,6 +117,7 @@ struct Settings {
     int sequenceLength;
     float global_brightness;
     bool follow;
+    bool note_preview;
     float gate_length;
     int scaleNum;
     int accent_prob;
@@ -115,8 +125,9 @@ struct Settings {
     bool muted[32];
     int accent[32];
     float velocity[32];
+    int note_hash;
     bool operator!=(const Settings& a) {
-        return a.sequenceLength != sequenceLength;
+        return a.note_hash != note_hash;
     }
 };
 
@@ -125,10 +136,12 @@ PersistentStorage<Settings> storage(hw.seed.qspi);
 
 void saveData() {
     
+    int note_hash = 0;
     Settings &localSettings = storage.GetSettings();
     localSettings.sequenceLength = sequenceLength;
     localSettings.global_brightness = global_brightness;
     localSettings.follow = follow;
+    localSettings.note_preview = note_preview;
     localSettings.gate_length = gate_length;
     localSettings.scaleNum = scaleNum;
     localSettings.accent_prob = accent_prob;
@@ -137,7 +150,9 @@ void saveData() {
         localSettings.muted[i] = sequence[i].muted;
         localSettings.accent[i]  = sequence[i].accent;
         localSettings.velocity[i] = sequence[i].velocity;
+        note_hash = note_hash + sequence[i].noteNumMIDI;
     }
+    localSettings.note_hash = note_hash;
     storage.Save();
 }
 
@@ -146,6 +161,7 @@ void loadData() {
     sequenceLength = localSettings.sequenceLength;
     global_brightness = localSettings.global_brightness;
     follow = localSettings.follow;
+    note_preview = localSettings.note_preview;
     gate_length = localSettings.gate_length;
     scaleNum = localSettings.scaleNum;
     accent_prob = localSettings.accent_prob;
@@ -182,12 +198,9 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         float clockout_val = clockout.Process(); 
         hw.WriteGate(CLOCK_OUT,clockout_val);
 
-        // CV out 
-        if (!current_note.muted && !tuninggate_val)  {
-            hw.SetCvOut(CV_OUT_1,current_note.voltage + transpose_voltage);
-        }
-        
-        //hw.seed.dac.WriteValue(daisy::DacHandle::Channel::TWO, hw.voltsToUnits(current_note.velocity));
+        // CV out         
+        hw.seed.dac.WriteValue(daisy::DacHandle::Channel::ONE, hw.voltsToUnits(current_note.voltage + transpose_voltage));
+        hw.seed.dac.WriteValue(daisy::DacHandle::Channel::TWO, hw.voltsToUnits(current_note.velocity));
 
     }
 };
@@ -231,6 +244,13 @@ void changeNotes() {
         newNote.muted = true;  
     } else {
         newNote.muted = false;
+    }
+
+    t = rng.GetValue() % 100;
+    if (t < accent_prob) {
+        newNote.accent = true;
+    } else {
+        newNote.accent = false;
     }
 
     sequence[noteToChange] = newNote;
@@ -461,8 +481,10 @@ void doEncoder(int enc, int val) {
 
         }
 
-        hw.SetCvOut(CV_OUT_1,sequence[enc + modifier].voltage + transpose_voltage);
-        tuningGate.ReTrigger();
+        if (note_preview) {
+            hw.seed.dac.WriteValue(daisy::DacHandle::Channel::ONE, hw.voltsToUnits(sequence[enc + modifier].voltage + transpose_voltage));
+            tuningGate.ReTrigger();
+        }
 
     } else {
 
@@ -505,8 +527,7 @@ void doEncoder(int enc, int val) {
             //
             // Scale encoder
             //
-            
-
+        
             int newScale = scaleNum + val;
             if (newScale < 1) newScale = 1;
             if (newScale > numScales) newScale = numScales;
@@ -559,6 +580,11 @@ void doEncoder(int enc, int val) {
 
 void doShiftClick(int enc) {
 
+
+    if (enc == 6) {
+        note_preview = !note_preview;
+    }
+
     if (enc == 7) {
         if (follow) {
             follow = false;
@@ -571,11 +597,10 @@ void doShiftClick(int enc) {
 
 int main(void)
 {
-
     // Configure and Initialize the Bloom
     hw.Init();
     hw.seed.StartLog(false);
-    int numLEDS = hw.ClearLeds();
+    hw.ClearLeds();
     hw.seed.StartAudio(AudioCallback);
     SampleRate = hw.seed.AudioSampleRate();
 
@@ -619,10 +644,12 @@ int main(void)
     validTones = scaleTones.at(scale);
     validToneWeights = scaleToneWeights.at(scale);
 
+    int note_hash = 0;
     Settings defaults;
     defaults.sequenceLength = 8;
     defaults.global_brightness = 0.5;
     defaults.follow = false;
+    defaults.note_preview = true;
     defaults.gate_length = 0.1;
     defaults.scaleNum = 1;
     defaults.accent_prob = 20;
@@ -631,17 +658,18 @@ int main(void)
         defaults.muted[r] = false;
         defaults.accent[r] = 0;
         defaults.velocity[r] = 0;
+        note_hash = note_hash + defaults.sequence[r];
      }
+     defaults.note_hash = note_hash;
     storage.Init(defaults);
 
     loadData();
 
-    // If saved data are not there, we should restore the defaults
-    if (sequenceLength < 1 || scaleNum < 1 || scaleNum > numScales) { 
+    //If saved data are not there, we should restore the defaults
+    if (sequenceLength < 1 || scaleNum < 1 || scaleNum >= numScales) { 
         storage.RestoreDefaults();  
         loadData();
     }
-
 
     for(;;)
     {
@@ -665,7 +693,9 @@ int main(void)
         float cv_mutation = hw.GetCvValue(CV_MUTATION);
         float cv_new = hw.GetCvValue(CV_RATE);
 
-        transpose_voltage = (knob_root * 2 - 1) + cv_root;
+        float root_volts = (cv_root + cal_global_offset)/cal_points_per_volt;
+        transpose_voltage = (knob_root * 2 - 1) + root_volts;
+        
         rest_probability = DSY_CLAMP((knob_rest * 100 - 10) + (cv_rest * 100 -10 ),0,90);
         newnote_range = (knob_range + cv_range) > 0.5;
         mutation_prob = DSY_CLAMP((knob_mutation + cv_mutation) * 100,0,100); 
