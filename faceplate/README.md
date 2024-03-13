@@ -8,9 +8,11 @@ I also added Sifam knobs from Thonk.
 
 For the encoders:
 [8 Black Small Skirt D - Sifam Plastic Knob](https://www.thonk.co.uk/shop/intellijel-black-knobs/)
+
 [8 Small Encoder Red - Sifam Plastic Cap (No Line)](https://www.thonk.co.uk/shop/sifam-caps/)
 
 For the pots:
 [5 Black Small Skirt D - Sifam Plastic Knob - With Line](https://www.thonk.co.uk/shop/intellijel-black-knobs/)
+
 [5 Small Red - Sifam Plastic Cap](https://www.thonk.co.uk/shop/sifam-caps/)
 
