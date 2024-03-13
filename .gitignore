@@ -1,0 +1,8 @@
+./build
+./development
+./faceplate
+./video
+./.vscode/.cortex-debug.peripherals.state.json
+./.vscode/.cortex-debug.registers.state.json
+./todo.txt
+

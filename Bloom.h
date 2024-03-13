@@ -112,12 +112,6 @@ enum GateOuts
  *  Example usage:
  *  SetCvOut(CV_OUT_1, volts);
  */
-// enum CVOuts
-// {
-//     CV_OUT_BOTH = 0,
-//     CV_OUT_1,
-//     CV_OUT_2,
-// };
 
 enum CVOuts 
 {

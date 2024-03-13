@@ -27,8 +27,7 @@ const std::map<int,std::string> scaleNames {
     {7,"Mixolydian"},
     {8,"Bhairav"},
     {9,"Chromatic"},
-    {10,"Tuning"},
-
+    {10,"Tuning"}
 };
 
 const std::map<std::string, std::vector<int>> scaleTones {   
@@ -42,7 +41,7 @@ const std::map<std::string, std::vector<int>> scaleTones {
     {"Mixolydian", std::vector<int>{1,3,5,6,8,10,11}},
     {"Bhairav", std::vector<int>{1,2,5,6,8,10,11}},
     {"Chromatic", std::vector<int>{1,2,3,4,5,6,7,8,9,10,11,12}},
-    {"Tuning", std::vector<int>{1}}
+    {"Tuning", std::vector<int>{1,1}}
 
 };
 
@@ -57,5 +56,5 @@ const std::map<std::string, std::vector<int>> scaleToneWeights {
     {"Mixolydian", std::vector<int>{3,2,3,3,3,2,1}},
     {"Bhairav", std::vector<int>{3,1,1,1,2,1,1}},
     {"Chromatic", std::vector<int>{1,1,1,1,1,1,1,1,1,1,1,1}},
-    {"Tuning", std::vector<int>{1}},
+    {"Tuning", std::vector<int>{1,1}}
 };
