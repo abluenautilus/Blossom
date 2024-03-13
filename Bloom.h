@@ -12,11 +12,13 @@
 #include "dev/sr_4021.h"
 #include "daisy_core.h"
 
-const uint16_t unitspervolt = 810;
+const uint16_t unitspervolt = 819;
 const float max_pot_value = 65535; // 16-bits
 
 namespace bloom
 {
+
+
 
 /** @brief Global buffers for the LED driver
  *  Non-cached for DMA usage.
@@ -110,13 +112,19 @@ enum GateOuts
  *  Example usage:
  *  SetCvOut(CV_OUT_1, volts);
  */
-enum CVOuts
+// enum CVOuts
+// {
+//     CV_OUT_BOTH = 0,
+//     CV_OUT_1,
+//     CV_OUT_2,
+// };
+
+enum CVOuts 
 {
-    CV_OUT_BOTH = 0,
     CV_OUT_1,
     CV_OUT_2,
+    CV_OUT_BOTH
 };
-
 
 /** @brief indexed accessors for RGB LEDs 
  *  Example usage:
@@ -161,6 +169,9 @@ struct Color {
     float g;
     float b;
 };
+
+ /** outside of class static buffer(s) for DMA access */
+uint16_t DMA_BUFFER_MEM_SECTION bloom_dac_buffer[2][48];
 
 /** 
     @brief  Class for handling encoders with no switch \n 
@@ -268,11 +279,26 @@ class Bloom
      */
     void Init(bool boost = true)
     {
+
         seed.Init(boost);
         ConfigureControls();
+        InitDac();
         ConfigureLeds();
         seed.adc.Start();
     }
+
+
+    void InitDac()
+    {
+        daisy::DacHandle::Config cfg;
+        cfg.bitdepth   = daisy::DacHandle::BitDepth::BITS_12;
+        cfg.buff_state = daisy::DacHandle::BufferState::ENABLED;
+        cfg.mode       = daisy::DacHandle::Mode::POLLING;
+        cfg.chn        = daisy::DacHandle::Channel::BOTH;
+        seed.dac.Init(cfg);
+        seed.dac.WriteValue(daisy::DacHandle::Channel::BOTH, 0);
+    }
+
 
     /** @brief Convert volts to raw output units, based on calibration */
     uint16_t voltsToUnits(float volts) {
@@ -323,7 +349,7 @@ class Bloom
             case CV_OUT_2:
                 ourChannel = daisy::DacHandle::Channel::TWO;
             case CV_OUT_BOTH:
-                ourChannel = daisy::DacHandle::Channel::BOTH;
+                ourChannel = daisy::DacHandle::Channel::BOTH; 
         }
         seed.dac.WriteValue(ourChannel, val);
     }
@@ -482,6 +508,8 @@ class Bloom
     /** Daisy Seed base object */
     daisy::DaisySeed seed;
 
+
+
   private:
 
     /** @brief Internal struct for managing encoder pin pairs */
@@ -601,12 +629,13 @@ class Bloom
         cv[CV_RATE].InitBipolarCv(seed.adc.GetMuxPtr(1, 1),seed.AudioCallbackRate());
 
         // Initialize DAC
-        daisy::DacHandle::Config daccfg;
-        daccfg.bitdepth   = daisy::DacHandle::BitDepth::BITS_12;
-        daccfg.buff_state = daisy::DacHandle::BufferState::ENABLED;
-        daccfg.mode       = daisy::DacHandle::Mode::POLLING;
-        daccfg.chn        = daisy::DacHandle::Channel::BOTH;
-        seed.dac.Init(daccfg);
+        // daisy::DacHandle::Config daccfg;
+        // daccfg.bitdepth   = daisy::DacHandle::BitDepth::BITS_12;
+        // daccfg.buff_state = daisy::DacHandle::BufferState::ENABLED;
+        // daccfg.mode       = daisy::DacHandle::Mode::POLLING;
+        // daccfg.chn        = daisy::DacHandle::Channel::BOTH;
+        // seed.dac.Init(daccfg);
+        
     }
 
     /** @brief  Set up LEDs */
@@ -629,4 +658,6 @@ class Bloom
 
 };
 
+
 } // namespace bloom
+

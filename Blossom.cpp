@@ -1,3 +1,11 @@
+/** BLOSSOM
+* 
+* Alternative firmware for Qu-Bit Bloom
+*
+* Original parts by Blue Nautilus
+*
+*/
+
 #include "daisy_seed.h"
 #include "Bloom.h"
 #include "Gate.cpp"
@@ -13,8 +21,8 @@
 
 using namespace daisy;
 using namespace bloom;
-using namespace seed;
 
+using namespace seed;
 
 enum newMelodyNoteOptions {
     NM_REPEAT,
@@ -29,6 +37,7 @@ enum srButtons {
     SRBUTTON_SHIFT
 };
 
+
 // Declare a DaisySeed object called hardware
 Bloom hw;
 
@@ -36,7 +45,7 @@ Bloom hw;
 static const float button_longpress_time = 1500;
 
 // Output gates
-Gate gate1,gate2,clockout,tuningGate;
+Gate gate1,gate2,clockout,tuningGate,accentGate;
 
 // Knob values
 float knob1, knob2, knob3, knob4, knob5;
@@ -64,6 +73,9 @@ float rest_probability = 0.0;
 int numScales;
 bool follow = false;
 float mutation_prob;
+float gate_length = 0.1;
+float reset_prev;
+float new_prev;
 
 //Melody creation
 int noteOptionWeights[4] = {0,0,0,10}; //REPEAT UP DOWN NEW
@@ -76,7 +88,10 @@ const int midi_max = 84;
 const int midi_min = 36;
 const int min_octave = 2;
 const int max_octave = 5;
+const float min_velocity = 0;
+const float max_velocity = 5;
 int newnote_range = 1;
+float accent_prob = 20;
 
 Note rootNote = Note(baseKey,baseOctave);
 std::vector<int> validTones = scaleTones.at(scale);
@@ -93,8 +108,13 @@ struct Settings {
     int sequenceLength;
     float global_brightness;
     bool follow;
+    float gate_length;
+    int scaleNum;
+    int accent_prob;
     int sequence[32];
     bool muted[32];
+    int accent[32];
+    float velocity[32];
     bool operator!=(const Settings& a) {
         return a.sequenceLength != sequenceLength;
     }
@@ -109,31 +129,33 @@ void saveData() {
     localSettings.sequenceLength = sequenceLength;
     localSettings.global_brightness = global_brightness;
     localSettings.follow = follow;
-    hw.seed.PrintLine("Saving length %d brightness %.2f",sequenceLength,global_brightness);
+    localSettings.gate_length = gate_length;
+    localSettings.scaleNum = scaleNum;
+    localSettings.accent_prob = accent_prob;
     for (size_t i = 0; i < 32; ++i) {
         localSettings.sequence[i] = sequence[i].noteNumMIDI;
         localSettings.muted[i] = sequence[i].muted;
-        hw.seed.PrintLine("Saving step %d note %d",i,localSettings.sequence[i]);
+        localSettings.accent[i]  = sequence[i].accent;
+        localSettings.velocity[i] = sequence[i].velocity;
     }
     storage.Save();
-    hw.seed.PrintLine("Saved length %d",sequenceLength);
 }
 
 void loadData() {
-    hw.seed.PrintLine("Before load %d",sequenceLength);
     Settings &localSettings = storage.GetSettings();
     sequenceLength = localSettings.sequenceLength;
     global_brightness = localSettings.global_brightness;
-    hw.seed.PrintLine("Loading length %d brightness %.2f",sequenceLength,global_brightness);
     follow = localSettings.follow;
+    gate_length = localSettings.gate_length;
+    scaleNum = localSettings.scaleNum;
+    accent_prob = localSettings.accent_prob;
     for (size_t i = 0; i < 32; ++i) {
         sequence[i].changeMIDINoteNum(localSettings.sequence[i]);
         sequence[i].muted = localSettings.muted[i];
-        hw.seed.PrintLine("Loading step %d note %d",i,localSettings.sequence[i]);
+        sequence[i].accent = localSettings.accent[i];
+        sequence[i].velocity = localSettings.velocity[i];
     }
-    hw.seed.PrintLine("Loaded length %d",sequenceLength);
 }
-
 
 // Yeah we don't make any audio but we use the audio callback anyways
 static void AudioCallback(AudioHandle::InputBuffer  in,
@@ -142,26 +164,30 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
 {
    for(size_t i = 0; i < size; i++)
     {
-        // Advance gates
+        // Tuning gate
         float tuninggate_val = tuningGate.Process(); 
         hw.WriteGate(GATE_1,tuninggate_val);
 
+        //  Main gate out
         float gate1_val = gate1.Process(); 
-
         if (!tuninggate_val) {
             hw.WriteGate(GATE_1,gate1_val);
         }
 
+        // Accent gate out
+        float acc_val = accentGate.Process();
+        hw.WriteGate(GATE_2, acc_val); 
 
-        float gate2_val = gate2.Process(); 
-        hw.WriteGate(GATE_2,gate2_val);
+        // Clock out
         float clockout_val = clockout.Process(); 
         hw.WriteGate(CLOCK_OUT,clockout_val);
 
-        // set cv out voltage
+        // CV out 
         if (!current_note.muted && !tuninggate_val)  {
             hw.SetCvOut(CV_OUT_1,current_note.voltage + transpose_voltage);
         }
+        
+        //hw.seed.dac.WriteValue(daisy::DacHandle::Channel::TWO, hw.voltsToUnits(current_note.velocity));
 
     }
 };
@@ -171,7 +197,6 @@ Note getRandomNote(int range) {
     //Choose a random note from the current scale
 
     int ourSemitone;
-    //int newNoteMIDI;
     int ourChoice;
 
     int num_choices = validToneWeights.size();
@@ -183,11 +208,9 @@ Note getRandomNote(int range) {
     int ourOctave;
     if (oct_max - oct_min == 0) {
         ourOctave = baseOctave;
-        hw.seed.PrintLine("ourOctave is %d",ourOctave);
     } else {
        int rn = rng.GetValue() % (oct_max - oct_min + 1);
        ourOctave = rn + oct_min;
-       hw.seed.PrintLine("rn is %d ourOctave is %d",rn,ourOctave);
     }
    
     Note newNote = Note(ourSemitone, ourOctave);
@@ -197,7 +220,6 @@ Note getRandomNote(int range) {
 
 void changeNotes() {
     
-    hw.seed.PrintLine("---------Note change---------");
     //substitute notes in the melody with new notes
 
     int noteToChange = (rng.GetValue() % sequenceLength) - 1;
@@ -205,8 +227,6 @@ void changeNotes() {
     Note newNote = getRandomNote(newnote_range);
 
     int t = rng.GetValue() % 100;
-    hw.seed.PrintLine("restprob is %.2f",rest_probability);
-    hw.seed.PrintLine("t is %d",t);
     if (t < rest_probability) { 
         newNote.muted = true;  
     } else {
@@ -228,17 +248,18 @@ void doStep() {
         //end of sequence mutations
         float noteChoice = rng.GetFloat(0,100)/2;
         if (noteChoice < mutation_prob) {
-            //hw.seed.PrintLine("noteChoice is %.2f mut prob %.2f",noteChoice,mutation_prob);
             changeNotes();
-        } else {
-            //hw.seed.PrintLine("NO CHANGE noteChoice is %.2f mut prob %.2f",noteChoice,mutation_prob);
-        }
+        } 
     }
 
     current_note = sequence[current_step];
 
     if (!current_note.muted) {
          gate1.ReTrigger();
+    }
+
+    if (current_note.accent) {
+        accentGate.ReTrigger();
     }
 
     current_page = current_step / 8;
@@ -270,11 +291,6 @@ void calibrationMelody() {
 void newMelody() {
 
     //Generate a new melody sequence
-
-    hw.seed.PrintLine("----NEW MELODY----");
-
-    hw.seed.PrintLine("Getting scale %d",scaleNum);
-
     scale = scaleNames.at(scaleNum);
     validTones = scaleTones.at(scale);
     validToneWeights = scaleToneWeights.at(scale);
@@ -288,19 +304,15 @@ void newMelody() {
         
         if (x>0){
             noteKind = weightedRandom(noteOptionWeights,4, rng);
-            hw.seed.PrintLine("NoteKind: %d",noteKind);
         } else {
             noteKind = NM_NEW;
-            hw.seed.PrintLine("Note kind: NEW");
         }
         
         if (noteKind == NM_REPEAT) {
             sequence[x] = prevNote;
-            hw.seed.PrintLine("Note kind: REPEAT");
 
         } else if (noteKind == NM_DOWN) {
 
-            hw.seed.PrintLine("Note kind: DOWN");
             //find tone of previous note in the scale, find index of toneNum in validTones
             std::vector<int>::iterator it = std::find(validTones.begin(),validTones.end(),prevNote.toneNum);
             int toneIndex = std::distance(validTones.begin(), it);
@@ -320,7 +332,6 @@ void newMelody() {
 
         } else if (noteKind == NM_UP) {
 
-            hw.seed.PrintLine("Note kind: UP");
             //find tone of previous note in the scale, find index of toneNum in validTones
             std::vector<int>::iterator it = std::find(validTones.begin(),validTones.end(),prevNote.toneNum);
             int toneIndex = std::distance(validTones.begin(), it);
@@ -340,11 +351,12 @@ void newMelody() {
 
 
         } else if (noteKind == NM_NEW) {
-            hw.seed.PrintLine("Note kind: NEW");
             Note newNote = getRandomNote(newnote_range);
             sequence[x] = newNote;
             prevNote = newNote;
         }
+
+        // Decide if note is muted
         int t = rng.GetValue() % 100;
         if (t < rest_probability) { 
             sequence[x].muted = true;
@@ -352,17 +364,22 @@ void newMelody() {
             sequence[x].muted = false;
         }
        
+        // Decide if note is accented
+        t = rng.GetValue() % 100;
+        if (t < accent_prob) { 
+            sequence[x].accent = true;
+        } else {
+            sequence[x].accent = false;
+        }
+
+        // Decide velocity value
+        t = rng.GetValue() % 100;
+        sequence[x].velocity = (float)t/100 * (max_velocity - min_velocity);
 
         prevNote = sequence[x];
         
     } 
 
-    //log new seqence
-    hw.seed.PrintLine("NEW MELODY:--");
-    for (int i = 0; i <=31; i++){
-        hw.seed.PrintLine("--: %s%d %d Muted: %d",sequence[i].noteName.c_str(),sequence[i].octave, sequence[i].noteNumMIDI,sequence[i].muted);
-    }
-    hw.seed.PrintLine("newnoterange %d",newnote_range);
 
 }
 
@@ -401,9 +418,6 @@ void doEncoder(int enc, int val) {
             int currentTone = sequence[enc + modifier].toneNum;
             int currentOctave = sequence[enc + modifier].octave;
             int validToneIndex = find(validTones, numValidTones,currentTone);
-
-            hw.seed.PrintLine("Current note is tone %d octave %d which is at index %d",currentTone,currentOctave,validToneIndex);
-
             int newval = validToneIndex + val;
             int newTone, newOctave;
             newOctave = 4;
@@ -430,8 +444,6 @@ void doEncoder(int enc, int val) {
                 newTone = validTones[newval];
             }
 
-            hw.seed.PrintLine("New octave is %d new tone is %d",newOctave,newTone);
-
             std::string newNoteNum = sequence[enc + modifier].numToNote[newTone];
             bool m = sequence[enc + modifier].muted;
             sequence[enc + modifier] = Note(newNoteNum,newOctave);
@@ -449,12 +461,11 @@ void doEncoder(int enc, int val) {
 
         }
 
-        hw.SetCvOut(CV_OUT_1,sequence[enc + modifier].voltage);
+        hw.SetCvOut(CV_OUT_1,sequence[enc + modifier].voltage + transpose_voltage);
         tuningGate.ReTrigger();
 
     } else {
 
-        hw.seed.PrintLine("shifted encoder turned.");
         if (enc == 0) {
             //
             //Length encoder
@@ -532,6 +543,16 @@ void doEncoder(int enc, int val) {
             global_brightness = global_brightness + (val * 0.05);
             hw.WriteLeds();
 
+        } else if (enc == 6) {
+
+            gate_length = DSY_CLAMP(gate_length + (val * 0.05),0.05,1);
+            gate1.SetDuration(gate_length);
+
+            
+        } else if (enc == 5) {
+
+            accent_prob = DSY_CLAMP(accent_prob + val,0,100);
+
         }
     }
 }
@@ -555,7 +576,6 @@ int main(void)
     hw.Init();
     hw.seed.StartLog(false);
     int numLEDS = hw.ClearLeds();
-    hw.seed.PrintLine("Number of LEDS: %d",numLEDS);
     hw.seed.StartAudio(AudioCallback);
     SampleRate = hw.seed.AudioSampleRate();
 
@@ -567,11 +587,13 @@ int main(void)
     clockout.Init(SampleRate);
     clockout.SetDuration(0.1);
     gate1.Init(SampleRate);
-    gate1.SetDuration(0.01);
+    gate1.SetDuration(gate_length);
     gate2.Init(SampleRate);
     gate2.SetDuration(0.01);
     tuningGate.Init(SampleRate);
     tuningGate.SetDuration(0.25);
+    accentGate.Init(SampleRate);
+    accentGate.SetDuration(0.1);
 
     // Set up buttons as shift reg buttons
     buttons[SRBUTTON_CHANNEL].Init(hw.shiftreg, BUTTON_CHANNEL, button_longpress_time);
@@ -596,20 +618,30 @@ int main(void)
     scale = scaleNames.at(scaleNum);
     validTones = scaleTones.at(scale);
     validToneWeights = scaleToneWeights.at(scale);
-    //newMelody();
-    //calibrationMelody();
 
     Settings defaults;
     defaults.sequenceLength = 8;
     defaults.global_brightness = 0.5;
     defaults.follow = false;
+    defaults.gate_length = 0.1;
+    defaults.scaleNum = 1;
+    defaults.accent_prob = 20;
     for (size_t r = 0; r < 32; ++r) {
         defaults.sequence[r] = 60;
         defaults.muted[r] = false;
+        defaults.accent[r] = 0;
+        defaults.velocity[r] = 0;
      }
     storage.Init(defaults);
 
     loadData();
+
+    // If saved data are not there, we should restore the defaults
+    if (sequenceLength < 1 || scaleNum < 1 || scaleNum > numScales) { 
+        storage.RestoreDefaults();  
+        loadData();
+    }
+
 
     for(;;)
     {
@@ -621,19 +653,27 @@ int main(void)
 
         // Read pots
         float knob_root = hw.GetKnobValue(KNOB_1);
-        transpose_voltage = knob_root * 2 - 1 ;
-        
         float knob_rest = hw.GetKnobValue(KNOB_2);
-        rest_probability = DSY_CLAMP(knob_rest * 100 - 10,0,90);
-
-        float knob_branches = hw.GetKnobValue(KNOB_3);
-        newnote_range = knob_branches > 0.5;
-
+        float knob_range = hw.GetKnobValue(KNOB_3); 
         float knob_mutation = hw.GetKnobValue(KNOB_4);
-        mutation_prob = knob_mutation * 100;
+        float knob_page = hw.GetKnobValue(KNOB_5);
 
-        float knob_rate = hw.GetKnobValue(KNOB_5);
-        
+        // Read incoming cv
+        float cv_root = hw.GetCvValue(CV_ROOT);
+        float cv_rest = hw.GetCvValue(CV_PATH);
+        float cv_range = hw.GetCvValue(CV_BRANCHES);
+        float cv_mutation = hw.GetCvValue(CV_MUTATION);
+        float cv_new = hw.GetCvValue(CV_RATE);
+
+        transpose_voltage = (knob_root * 2 - 1) + cv_root;
+        rest_probability = DSY_CLAMP((knob_rest * 100 - 10) + (cv_rest * 100 -10 ),0,90);
+        newnote_range = (knob_range + cv_range) > 0.5;
+        mutation_prob = DSY_CLAMP((knob_mutation + cv_mutation) * 100,0,100); 
+
+        if (cv_new > 0.1 && new_prev < 0.1) {
+            newMelody();
+        }
+        new_prev = cv_new;
 
         // Read buttons
         if (buttons[SRBUTTON_SHIFT].Pressed()) {
@@ -654,12 +694,6 @@ int main(void)
         if (buttons[SRBUTTON_RESET].isPressedLong()) {
             loadData();
         }
-        if (buttons[SRBUTTON_RESET].isReleasedLong()) {
-            hw.seed.PrintLine("Released Long");
-        }
-        if (buttons[SRBUTTON_RESET].isDoubleClicked()) {
-            hw.seed.PrintLine("Double Clicked");
-        }
 
         if (!buttons[SRBUTTON_CHANNEL].Pressed() ) {
             hw.SetLed(LED_CHANNEL,0.0,0.0,0.0);
@@ -678,7 +712,7 @@ int main(void)
         if (follow) {
             display_page = current_page;
         } else {
-            display_page = floor(knob_rate * 4);
+            display_page = floor(knob_page * 4);
         }
         int modifier = display_page * 8;
         
@@ -717,10 +751,6 @@ int main(void)
             }
         }
 
-        //Check incoming CV
-        float cv1 = hw.GetCvValue(CV_PATH);
-        hw.SetLed(LED_CENTER1,0.0,0.0,cv1);
-
         // Blink clock light
         float clkval = hw.ButtonState(CLOCK_IN);
         hw.SetLed(LED_CLOCK,0.0,clkval * global_brightness,clkval* global_brightness);
@@ -728,6 +758,10 @@ int main(void)
         // Set gate out light
         float gate1val = gate1.GetCurrentState();
         hw.SetLed(LED_GATE1,0.0,0.0,gate1val* global_brightness);
+
+        // Set accent light
+        float accval = accentGate.GetCurrentState();
+        hw.SetLed(LED_GATE2,0.0, 0.0, accval * global_brightness);
 
         // set page LEDs
         for (int x =0; x < 4; ++x) {
@@ -743,12 +777,28 @@ int main(void)
         // update LEDs
         if (!buttons[SRBUTTON_SHIFT].Pressed()) hw.WriteLeds();
 
+        // Reset to defaults
+        if (buttons[SRBUTTON_CHANNEL].isPressedLong()) {
+
+            storage.RestoreDefaults();
+            loadData();
+            hw.SetLed(LED_CHANNEL,1,0,0);
+            hw.SetLed(LED_RESET,1,0,0);
+            hw.SetLed(LED_SHIFT,1,0,0);
+            hw.WriteLeds();
+            hw.SetLed(LED_CHANNEL,0,0,0);
+            hw.SetLed(LED_RESET,0,0,0);
+            hw.SetLed(LED_SHIFT,0,0,0);
+            hw.WriteLeds();
+        }
+        if (hw.ButtonRisingEdge(RESET_TRIG)) {
+            current_step = 0;
+        }
+
         // DETECT INCOMING CLOCK
         if (hw.ButtonRisingEdge(CLOCK_IN)) {
             doStep();      
         }
-        // throttle update rate
-        //System::Delay(100);
         
     }
 }
