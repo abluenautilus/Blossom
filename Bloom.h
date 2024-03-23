@@ -621,14 +621,6 @@ class Bloom
         cv[CV_BRANCHES].InitBipolarCv(seed.adc.GetMuxPtr(0, 6),seed.AudioCallbackRate());
         cv[CV_MUTATION].InitBipolarCv(seed.adc.GetMuxPtr(0, 7),seed.AudioCallbackRate());
         cv[CV_RATE].InitBipolarCv(seed.adc.GetMuxPtr(1, 1),seed.AudioCallbackRate());
-
-        // Initialize DAC
-        // daisy::DacHandle::Config daccfg;
-        // daccfg.bitdepth   = daisy::DacHandle::BitDepth::BITS_12;
-        // daccfg.buff_state = daisy::DacHandle::BufferState::ENABLED;
-        // daccfg.mode       = daisy::DacHandle::Mode::POLLING;
-        // daccfg.chn        = daisy::DacHandle::Channel::BOTH;
-        // seed.dac.Init(daccfg);
         
     }
 

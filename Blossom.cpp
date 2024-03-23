@@ -14,6 +14,7 @@
 #include "utils.hpp"
 #include "ColorLists.hpp"
 #include "SRButton.cpp"
+#include <list>
 
 #define DSY_MIN(in, mn) (in < mn ? in : mn)
 #define DSY_MAX(in, mx) (in > mx ? in : mx)
@@ -65,6 +66,7 @@ Note current_note;
 Note sequence[maxSteps];
 int sequenceLength = 8;
 const float volts_per_semitone = 0.083333;
+const uint8_t maxRatchets = 5;
 
 float transpose_voltage = 0.0;
 
@@ -73,9 +75,17 @@ int current_page = 0;
 int display_page = 0;
 int current_place = 0;
 
+bool encoderTurned = false;
+
+uint32_t currentFrame, prevFrame;
+std::list<uint32_t> gapTimes;
+static const uint8_t numGapsToAverage = 5;
+float averageTriggerGap = 0.5;
+
 //Settings
 float global_brightness = 0.5;
 float rest_probability = 0.0;
+float gate_proportion = 0.5;
 float gate_length = 0.1;
 bool note_preview = true;
 
@@ -125,6 +135,7 @@ struct Settings {
     bool muted[32];
     int accent[32];
     float velocity[32];
+    int ratchets[32];
     int note_hash;
     bool operator!=(const Settings& a) {
         return a.note_hash != note_hash;
@@ -150,6 +161,7 @@ void saveData() {
         localSettings.muted[i] = sequence[i].muted;
         localSettings.accent[i]  = sequence[i].accent;
         localSettings.velocity[i] = sequence[i].velocity;
+        localSettings.ratchets[i] = sequence[i].ratchets;
         note_hash = note_hash + sequence[i].noteNumMIDI;
     }
     localSettings.note_hash = note_hash;
@@ -170,6 +182,7 @@ void loadData() {
         sequence[i].muted = localSettings.muted[i];
         sequence[i].accent = localSettings.accent[i];
         sequence[i].velocity = localSettings.velocity[i];
+        sequence[i].ratchets = localSettings.ratchets[i];
     }
 }
 
@@ -186,8 +199,16 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
 
         //  Main gate out
         float gate1_val = gate1.Process(); 
+
+        // If we are changing pitch, that takes precendence
         if (!tuninggate_val) {
             hw.WriteGate(GATE_1,gate1_val);
+
+            if (gate1_val) {
+                // CV out         
+                hw.seed.dac.WriteValue(daisy::DacHandle::Channel::ONE, hw.voltsToUnits(current_note.voltage + transpose_voltage));
+                hw.seed.dac.WriteValue(daisy::DacHandle::Channel::TWO, hw.voltsToUnits(current_note.velocity));
+            }
         }
 
         // Accent gate out
@@ -198,9 +219,6 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         float clockout_val = clockout.Process(); 
         hw.WriteGate(CLOCK_OUT,clockout_val);
 
-        // CV out         
-        hw.seed.dac.WriteValue(daisy::DacHandle::Channel::ONE, hw.voltsToUnits(current_note.voltage + transpose_voltage));
-        hw.seed.dac.WriteValue(daisy::DacHandle::Channel::TWO, hw.voltsToUnits(current_note.velocity));
 
     }
 };
@@ -275,7 +293,10 @@ void doStep() {
     current_note = sequence[current_step];
 
     if (!current_note.muted) {
-         gate1.ReTrigger();
+        gate1.SetRatchets(current_note.ratchets);
+        gate_length = gate_proportion * averageTriggerGap;
+        gate1.SetDuration(gate_length);
+        gate1.ReTrigger();
     }
 
     if (current_note.accent) {
@@ -284,6 +305,8 @@ void doStep() {
 
     current_page = current_step / 8;
     current_place = current_step % 8;
+
+
 
 }
 
@@ -433,6 +456,8 @@ void doEncoder(int enc, int val) {
 
         if (!hw.ButtonState(enc)) {
 
+            int oldRatchets = sequence[enc + modifier].ratchets;
+
             validTones = scaleTones.at(scale);
             int numValidTones = validTones.size();
             int currentTone = sequence[enc + modifier].toneNum;
@@ -468,21 +493,25 @@ void doEncoder(int enc, int val) {
             bool m = sequence[enc + modifier].muted;
             sequence[enc + modifier] = Note(newNoteNum,newOctave);
             sequence[enc + modifier].muted = m;
+            sequence[enc + modifier].ratchets = oldRatchets;
 
         } else {
 
-            int oldval = sequence[enc + modifier].noteNumMIDI;
+            int oldval = sequence[enc + modifier].ratchets;
             int newval = oldval + val;
 
-            if (newval > midi_max) newval = midi_max;
-            if (newval < midi_min) newval = midi_min;
+            if (newval > maxRatchets) newval = maxRatchets;
+            if (newval < 0) newval = 0;
 
-            sequence[enc + modifier].changeMIDINoteNum(newval);
+            sequence[enc + modifier].ratchets = newval;
+            encoderTurned = true;
+            
 
         }
 
         if (note_preview) {
             hw.seed.dac.WriteValue(daisy::DacHandle::Channel::ONE, hw.voltsToUnits(sequence[enc + modifier].voltage + transpose_voltage));
+            tuningGate.SetRatchets(sequence[enc + modifier].ratchets);
             tuningGate.ReTrigger();
         }
 
@@ -566,9 +595,10 @@ void doEncoder(int enc, int val) {
 
         } else if (enc == 6) {
 
-            gate_length = DSY_CLAMP(gate_length + (val * 0.05),0.05,1);
+            gate_proportion = DSY_CLAMP(gate_proportion + (val * 0.05),0.05,0.9);
+            gate_length = gate_proportion * averageTriggerGap;
             gate1.SetDuration(gate_length);
-
+            hw.seed.PrintLine("Duration %.3f",gate_length);
             
         } else if (enc == 5) {
 
@@ -579,7 +609,6 @@ void doEncoder(int enc, int val) {
 }
 
 void doShiftClick(int enc) {
-
 
     if (enc == 6) {
         note_preview = !note_preview;
@@ -658,6 +687,7 @@ int main(void)
         defaults.muted[r] = false;
         defaults.accent[r] = 0;
         defaults.velocity[r] = 0;
+        defaults.ratchets[r] = 0;
         note_hash = note_hash + defaults.sequence[r];
      }
      defaults.note_hash = note_hash;
@@ -748,15 +778,18 @@ int main(void)
         
         // Check encoder clicks
         for (int i = 0; i < ENC_LAST; ++i) {
-            if (hw.ButtonRisingEdge(i)) {
+            if (hw.ButtonFallingEdge(i)) {
                 if (hw.ButtonState(BUTTON_SHIFT)) {
                     doShiftClick(i);
                 } else {
-                    sequence[i + modifier].muted = !sequence[i + modifier].muted;
+                    if (!encoderTurned) {
+                        sequence[i + modifier].muted = !sequence[i + modifier].muted;
+                    } else {
+                        encoderTurned = false;
+                    }
                 }
             }
         }
-
 
         // Set individual step LEDs
         for (size_t i = 0; i < 8; ++i) {
@@ -827,6 +860,22 @@ int main(void)
 
         // DETECT INCOMING CLOCK
         if (hw.ButtonRisingEdge(CLOCK_IN)) {
+
+            // Calculate the tempo here, used for ratcheting
+            prevFrame = currentFrame;
+            currentFrame = daisy::System::GetNow();
+            uint32_t gap = currentFrame - prevFrame;
+            if (gap < 2000) {
+                if (gapTimes.size() >= numGapsToAverage) {
+                    gapTimes.pop_back();
+                }
+                gapTimes.push_front(gap);
+            }
+            if (gapTimes.size() > 2) {
+                uint32_t total = std::accumulate(std::begin(gapTimes),std::end(gapTimes),0);
+                averageTriggerGap = (float)total/(float)gapTimes.size()/1000;
+            }
+
             doStep();      
         }
         

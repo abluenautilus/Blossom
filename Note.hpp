@@ -19,6 +19,7 @@ class Note {
         bool muted;
         float velocity;
         bool accent;
+        uint8_t ratchets = 0;
 
         std::map<std::string,int> noteToNum;
         std::map<int,std::string> numToNote;

@@ -15,11 +15,24 @@ bool Gate::Process() {
 
     elapsed_ = float(current_sample_) * (1/float(sample_rate_));
 
-    if (current_state_) {
-        if (elapsed_ >= duration_) {
-            current_state_ = false;
+    if (elapsed_ >= duration_) {
+        current_state_ = false;
+    } else {
+        if (ratchets_ > 0){
+         
+            float part = elapsed_/part_duration_;
+            int prefix = (double)((int)part*100)/100;
+       
+            if (prefix % 2) {
+                current_state_ = false;
+            } else {
+                current_state_ = true;
+            }
+        } else {
+            current_state_ = true;
         }
     }
+    
 
     return current_state_;
 
@@ -36,13 +49,31 @@ void Gate::ReTrigger() {
     current_sample_ = 0;
     current_state_ = true;
     elapsed_ = 0.f;
+    
+    daisy::DaisySeed::PrintLine("ratchets %d parts %d",ratchets_,num_sections_);
 
 }
     
 void Gate::SetDuration(float dur) {
 
     duration_ = dur;
+    part_duration_ = duration_/(float)num_sections_;
 
+}
+
+void Gate::SetRatchets(int ratchets) {
+
+    ratchets_ = ratchets;
+    if (ratchets_ == 0) {
+        num_sections_ = 1;
+    } else {
+        num_sections_ = (ratchets + 1) * 2;
+    }
+    part_duration_ = duration_/(float)num_sections_;
+}
+
+int Gate::GetRatchets() {
+    return ratchets_;
 }
 
 float Gate::GetDuration() {
