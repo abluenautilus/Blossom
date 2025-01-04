@@ -502,8 +502,6 @@ class Bloom
     /** Daisy Seed base object */
     daisy::DaisySeed seed;
 
-
-
   private:
 
     /** @brief Internal struct for managing encoder pin pairs */

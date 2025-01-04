@@ -50,8 +50,6 @@ void Gate::ReTrigger() {
     current_state_ = true;
     elapsed_ = 0.f;
     
-    daisy::DaisySeed::PrintLine("ratchets %d parts %d",ratchets_,num_sections_);
-
 }
     
 void Gate::SetDuration(float dur) {

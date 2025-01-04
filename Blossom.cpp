@@ -68,6 +68,8 @@ int sequenceLength = 8;
 const float volts_per_semitone = 0.083333;
 const uint8_t maxRatchets = 5;
 
+bool afterStartup = false;
+
 float transpose_voltage = 0.0;
 
 int current_step = 0;
@@ -276,6 +278,7 @@ void changeNotes() {
 }
 
 void doStep() {
+
 
     clockout.ReTrigger();
 
@@ -701,10 +704,15 @@ int main(void)
         loadData();
     }
 
+    int cycleCounter = 0;
+
     for(;;)
     {
         hw.ProcessAllControls();
 
+        if (cycleCounter < 1000)  ++cycleCounter;
+        if (cycleCounter > 10) afterStartup = true;
+    
         for (int i = 0; i < 3; ++i) {
             buttons[i].Debounce();
         }
@@ -729,6 +737,7 @@ int main(void)
         rest_probability = DSY_CLAMP((knob_rest * 100 - 10) + (cv_rest * 100 -10 ),0,90);
         newnote_range = (knob_range + cv_range) > 0.5;
         mutation_prob = DSY_CLAMP((knob_mutation + cv_mutation) * 100,0,100); 
+        if (mutation_prob < 5) {mutation_prob = 0;}
 
         if (cv_new > 0.1 && new_prev < 0.1) {
             newMelody();
@@ -782,7 +791,7 @@ int main(void)
                 if (hw.ButtonState(BUTTON_SHIFT)) {
                     doShiftClick(i);
                 } else {
-                    if (!encoderTurned) {
+                    if (!encoderTurned && afterStartup) {
                         sequence[i + modifier].muted = !sequence[i + modifier].muted;
                     } else {
                         encoderTurned = false;
